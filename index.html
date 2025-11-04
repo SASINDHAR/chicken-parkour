@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Chicken Parkour: Escape the KFC</title>
+<style>
+  :root{--bg:#111;--ground:#2b2b2b;--text:#fff}
+  html,body{height:100%;margin:0;background:linear-gradient(#0b1220,#071029);color:var(--text);font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:900px;margin:18px auto;padding:12px}
+  h1{font-size:20px;margin:0 0 8px}
+  #game{display:block;width:100%;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,0.6);background:var(--bg)}
+  .hud{display:flex;gap:12px;align-items:center;margin-top:10px;flex-wrap:wrap}
+  .chip{background:rgba(255,255,255,0.04);padding:8px 12px;border-radius:999px;font-weight:600}
+  footer{margin-top:12px;font-size:13px;color:#b7c3d0}
+  /* tiny mobile hint */
+  @media(max-width:480px){h1{font-size:18px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Chicken Parkour: Escape the KFC — (Space / ↑ to jump)</h1>
+  <canvas id="game" width="900" height="360"></canvas>
+  <div class="hud">
+    <div class="chip" id="score">Score: 0</div>
+    <div class="chip" id="best">Best: 0</div>
+    <div class="chip" id="mode">Mode: Normal</div>
+    <div class="chip" id="tip">Tip: watch for the clown obstacles 🤡</div>
+    <button id="restart" class="chip">Restart</button>
+  </div>
+  <footer>Made for fun — extremely hard. Want easier? Lower spawn rate in code.</footer>
+</div>
+
+<script>
+(() => {
+  const c = document.getElementById('game');
+  const ctx = c.getContext('2d');
+  let W = c.width, H = c.height;
+  const groundY = H - 70;
+  let gravity = 0.9;
+
+  // Game state
+  let score = 0, best = localStorage.getItem('cp_best')||0, speed=4, spawnTimer=0, spawnRate=90;
+  let obstacles = [], particles = [];
+  let player = {
+    x:100, y:groundY, w:42, h:42, vy:0, jumps:0, alive:true
+  };
+
+  // UI elements
+  const scoreEl = document.getElementById('score');
+  const bestEl  = document.getElementById('best'); bestEl.textContent = 'Best: ' + best;
+  const modeEl  = document.getElementById('mode');
+  const tipEl   = document.getElementById('tip');
+  const restartBtn = document.getElementById('restart');
+
+  function rand(a,b){ return Math.random()*(b-a)+a }
+
+  // funny faces for obstacles
+  const OB_TYPES = [
+    {emoji:'🪑', w:48, h:48, tag:'chair'},
+    {emoji:'🍗', w:40, h:36, tag:'temptation'},
+    {emoji:'🤡', w:56, h:56, tag:'clown'}, // troll obstacle — higher hitbox
+    {emoji:'🥚', w:30, h:30, tag:'egg'},
+    {emoji:'🛻', w:80, h:40, tag:'truck'},
+    {emoji:'🐔', w:46, h:36, tag:'chicken-friend'} // harmless (?) sometimes
+  ];
+
+  // handle resizing while keeping canvas aspect
+  function onResize(){
+    const ratio = 900/360;
+    const containerW = Math.min(1000, window.innerWidth - 40);
+    c.style.width = containerW + 'px';
+    // keep internal size constant for deterministic behavior
+  }
+  window.addEventListener('resize', onResize);
+  onResize();
+
+  // Input
+  let keys = {};
+  window.addEventListener('keydown', e=>{
+    keys[e.code]=true;
+    if((e.code==='Space' || e.code==='ArrowUp') && player.alive) jump();
+    if(!player.alive && (e.code==='Space' || e.code==='KeyR')) restart();
+  });
+  window.addEventListener('keyup', e=> keys[e.code]=false);
+  document.getElementById('restart').addEventListener('click', restart);
+
+  function jump(){
+    if(!player.alive) return;
+    // allow single jump + one mid-air double jump (if jumps < 2)
+    if(player.jumps < 2){
+      player.vy = -14 - player.jumps*2;
+      player.jumps++;
+      // small particle burst
+      for(let i=0;i<8;i++){
+        particles.push({x:player.x+player.w/2, y:player.y+player.h/2, vx:rand(-3,3), vy:rand(-6,-1), life:40});
+      }
+    }
+  }
+
+  function spawnObstacle(){
+    // difficulty scaling: occasionally spawn clusters / troll obstacles
+    let type = OB_TYPES[Math.floor(rand(0,OB_TYPES.length))];
+    // add random chance to spawn a clown cluster
+    if(Math.random() < Math.min(0.02 + score/2000, 0.18)) {
+      type = OB_TYPES.find(t=>t.tag==='🤡' || t.tag==='clown') || OB_TYPES[2];
+    }
+    // create obstacle
+    const o = {
+      x: W + 40,
+      y: groundY - (type.h - 8) - (Math.random()<0.12 ? rand(40,120) : 0), // sometimes floating
+      w: type.w, h: type.h,
+      emoji: type.emoji,
+      tag: type.tag,
+      vx: -(speed + rand(0,1.4)),
+      spin: rand(-0.1,0.1),
+      rot: 0
+    };
+    // special: truck is big and slower but lethal
+    if(o.tag === 'truck'){ o.vx = -(speed*0.9); o.h += 6; o.w += 20; }
+    obstacles.push(o);
+  }
+
+  function update(){
+    if(!player.alive) return;
+
+    // time/difficulty
+    score += 1;
+    if(score%600 === 0) { speed += 0.6; spawnRate = Math.max(30, spawnRate - 6); modeEl.textContent = 'Mode: Getting spicy'; }
+    scoreEl.textContent = 'Score: ' + Math.floor(score/10);
+
+    // spawn logic
+    spawnTimer++;
+    if(spawnTimer > spawnRate + Math.floor(rand(-10,30))) {
+      spawnObstacle();
+      spawnTimer = 0;
+    }
+
+    // player physics
+    player.vy += gravity*0.9;
+    player.y += player.vy;
+    if(player.y + player.h >= groundY) {
+      player.y = groundY - player.h;
+      player.vy = 0;
+      player.jumps = 0;
+    }
+
+    // update obstacles
+    for(let i = obstacles.length-1; i>=0; i--){
+      const o = obstacles[i];
+      o.x += o.vx;
+      o.rot += o.spin;
+      // tiny randomness
+      if(Math.random() < 0.005 && Math.abs(o.vx) > 1) o.vx -= 0.3;
+      if(o.x + o.w < -100) obstacles.splice(i,1);
+      // collision
+      if(rectIntersect(player, o)){
+        // special: chicken-friend is a fake collision 40% of time
+        if(o.tag === 'chicken-friend' && Math.random() < 0.4){
+          // bump score (you hugged a friend) and particle party
+          score += 300;
+          for(let p=0;p<18;p++) particles.push({x:o.x+o.w/2, y:o.y, vx:rand(-4,4), vy:rand(-8,-1), life:50});
+          obstacles.splice(i,1);
+        } else {
+          // death
+          explode(player.x+player.w/2, player.y+player.h/2, 50);
+          player.alive = false;
+          // update best
+          if(Math.floor(score/10) > best) { best = Math.floor(score/10); localStorage.setItem('cp_best', best); bestEl.textContent = 'Best: ' + best; }
+        }
+      }
+    }
+
+    // update particles
+    for(let i=particles.length-1;i>=0;i--){
+      const p = particles[i];
+      p.vy += 0.25;
+      p.x += p.vx; p.y += p.vy;
+      p.life--;
+      if(p.life<=0) particles.splice(i,1);
+    }
+  }
+
+  function rectIntersect(a,b){
+    const ax=a.x, ay=a.y, aw=a.w, ah=a.h;
+    const bx=b.x, by=b.y, bw=b.w, bh=b.h;
+    return !(ax+aw < bx || ax > bx+bw || ay+ah < by || ay > by+bh);
+  }
+
+  function explode(x,y,count){
+    for(let i=0;i<count;i++){
+      particles.push({x:x, y:y, vx:rand(-6,6), vy:rand(-8,2), life:40+Math.random()*40});
+    }
+  }
+
+  function draw(){
+    // background
+    ctx.clearRect(0,0,W,H);
+    // sky gradient
+    const g = ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0,'#0a1220'); g.addColorStop(1,'#031026');
+    ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+
+    // distant hills (parallax)
+    for(let i=0;i<6;i++){
+      ctx.fillStyle = `rgba(50,70,80,${0.04 + i*0.02})`;
+      const hx = (i*200 + (score*0.02*(i%2?1:-1))) % (W+200) - 100;
+      ctx.beginPath(); ctx.ellipse(hx, groundY-40 - i*6, 220 - i*18, 60 - i*8, 0, 0, Math.PI*2); ctx.fill();
+    }
+
+    // ground
+    ctx.fillStyle = '#222';
+    ctx.fillRect(0, groundY, W, H-groundY);
+
+    // tiles on ground
+    for(let i=0;i<W;i+=40){
+      ctx.fillStyle = i%80===0 ? '#2d2d2d' : '#262626';
+      ctx.fillRect((i + (score*0.4 % 40)), groundY+36, 40, 6);
+    }
+
+    // obstacles
+    obstacles.forEach(o=>{
+      ctx.save();
+      ctx.translate(o.x + o.w/2, o.y + o.h/2);
+      ctx.rotate(o.rot);
+      ctx.font = Math.round(o.h)+'px serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(o.emoji, 0, 0);
+      ctx.restore();
+    });
+
+    // player (chicken)
+    ctx.save();
+    ctx.translate(player.x + player.w/2, player.y + player.h/2);
+    // chicken wobbles when in air or dies
+    const wob = Math.sin(score/12) * (player.vy*0.02);
+    ctx.rotate(wob);
+    ctx.font = player.h + 'px serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('🐔', 0, 0);
+    ctx.restore();
+
+    // particles (small circles or emoji)
+    particles.forEach(p=>{
+      ctx.globalAlpha = Math.max(0, Math.min(1, p.life/60));
+      ctx.fillStyle = `rgba(255,255,255,${0.9*Math.min(1,p.life/60)})`;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 3 + Math.abs(p.vx)*0.4, 0, Math.PI*2); ctx.fill();
+    });
+    ctx.globalAlpha = 1;
+
+    // if dead
+    if(!player.alive){
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.fillRect(0,0,W,H);
+      ctx.fillStyle = '#fff';
+      ctx.font='28px sans-serif';
+      ctx.textAlign='center';
+      ctx.fillText('You died. Press Space or click Restart to try again. (Very hard!)', W/2, H/2 - 20);
+      ctx.font='20px sans-serif';
+      ctx.fillText('Pro tip: double jump is your friend. Also beware the 🤡', W/2, H/2 + 14);
+    }
+  }
+
+  function loop(){
+    update();
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  function restart(){
+    obstacles = []; particles = []; score = 0; speed = 4; spawnRate = 90; spawnTimer=0;
+    player.x = 100; player.y = groundY - player.h; player.vy = 0; player.jumps = 0; player.alive = true;
+    tipEl.textContent = 'Tip: the 🍗 can lure you into traps...';
+  }
+
+  // start
+  loop();
+})();
+</script>
+</body>
+</html>
